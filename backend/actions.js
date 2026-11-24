@@ -122,6 +122,55 @@ function setupObservability(req, res) {
   runScriptSSE(res, script('setup-observability.sh'), []);
 }
 
+
+function runChained(res, steps) {
+  if (steps.length === 0) {
+    send(res, { type: 'done', ok: true });
+    res.end();
+    return;
+  }
+
+  const [current, ...rest] = steps;
+  send(res, { type: 'log', line: `\n▶ ${path.basename(current.path)} ${current.args.join(' ')}\n` });
+
+  const child = spawn(current.path, current.args, {
+    env: { ...process.env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
+  });
+
+  let buf = '';
+  function flush(chunk) {
+    buf += chunk.toString();
+    const parts = buf.split('\n');
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (parts[i]) send(res, { type: 'log', line: parts[i] + '\n' });
+    }
+    buf = parts[parts.length - 1];
+  }
+
+  child.stdout.on('data', flush);
+  child.stderr.on('data', flush);
+
+  child.on('close', (code) => {
+    if (buf) send(res, { type: 'log', line: buf });
+    if (code !== 0) {
+      send(res, { type: 'done', ok: false, exitCode: code });
+      res.end();
+      return;
+    }
+    runChained(res, rest);
+  });
+
+  child.on('error', (err) => {
+    send(res, { type: 'error', message: err.message });
+    res.end();
+  });
+
+  res.on('close', () => { if (!child.killed) child.kill('SIGTERM'); });
+}
+
+
 /**
  * POST /api/onboard
  * Body (JSON):
@@ -133,15 +182,10 @@ function setupObservability(req, res) {
  */
 function onboardService(req, res) {
   const {
-    repoUrl,
-    branch,
-    serviceName,
-    buildMethod = 'auto',
-    dbMode = 'none',
-    port = '8080',
-    replicas = '1',
-    envVars = [],
-    secretNames = [],
+    repoUrl, branch, serviceName,
+    buildMethod = 'auto', dbMode = 'none',
+    port = '8080', replicas = '1',
+    envVars = [], secretNames = [],
   } = req.body || {};
 
   if (!repoUrl || !branch || !serviceName) {
@@ -149,23 +193,29 @@ function onboardService(req, res) {
     return;
   }
 
-  // Encode env vars as KEY=VALUE pairs joined by commas (script splits on ,)
   const envVarStr = envVars.map((e) => `${e.key}=${e.value}`).join(',');
   const secretStr = secretNames.join(',');
 
-  const args = [
-    '--repo', repoUrl,
-    '--branch', branch,
-    '--name', serviceName,
-    '--build', buildMethod,
-    '--db', dbMode,
-    '--port', String(port),
-    '--replicas', String(replicas),
+  const onboardArgs = [
+    '--repo', repoUrl, '--branch', branch, '--name', serviceName,
+    '--build-method', buildMethod, '--db-mode', dbMode,
+    '--port', String(port), '--replicas', String(replicas),
+    '--non-interactive',
   ];
-  if (envVarStr) args.push('--env', envVarStr);
-  if (secretStr) args.push('--secrets', secretStr);
+  if (envVarStr) onboardArgs.push('--env', envVarStr);
+  if (secretStr) onboardArgs.push('--secret', secretStr);
 
-  runScriptSSE(res, script('onboard.sh'), args);
+  const confPath = `manifests/${serviceName}.onboard.conf`;
+
+  initSSE(res);
+
+  // Step 1: onboard
+  runChained(res, [
+    { path: script('onboard.sh'),            args: onboardArgs },
+    { path: script('build.sh'),              args: [confPath] },
+    { path: script('generate-manifests.sh'), args: [confPath] },
+    { path: '/usr/bin/kubectl',              args: ['apply', '-k', `manifests/${serviceName}/`] },
+  ]);
 }
 
 /**

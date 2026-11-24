@@ -49,7 +49,7 @@ install_argocd() {
   fi
 
   info "Installing ArgoCD ($ARGOCD_VERSION) → namespace $ARGOCD_NAMESPACE"
-  kubectl apply -n "$ARGOCD_NAMESPACE" -f "$manifest_url"
+  kubectl apply --server-side --force-conflicts -n "$ARGOCD_NAMESPACE" -f "$manifest_url"
 
   info "Waiting for ArgoCD server to be ready (this may take ~2 minutes)..."
   kubectl rollout status deployment/argocd-server \
@@ -74,7 +74,7 @@ patch_argocd_insecure() {
 
 apply_platform_rbac() {
   info "Applying ArgoCD platform RBAC"
-  kubectl apply -f argocd-rbac.yaml
+  kubectl apply --server-side --force-conflicts -f argocd-rbac.yaml
 }
 
 get_initial_password() {
