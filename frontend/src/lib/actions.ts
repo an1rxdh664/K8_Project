@@ -1,14 +1,20 @@
 /**
- * actions.ts — typed client for all action (SSE) endpoints.
+ * actions.ts — typed client for all action (SSE) endpoints.  (fixed version)
  *
- * These functions return the URL + body needed to call useSSE.start().
- * They do NOT trigger the fetch themselves — the hook owns the connection.
+ * Why URLs are now absolute:
+ *   Long-running actions (build, onboard, migrations) stream output for minutes.
+ *   Next.js `rewrites()` proxy requests with a short default timeout and may
+ *   buffer/compress the body, so the stream was cut mid-build and the UI then
+ *   reported "success" (useSSE treats an ended stream as success).
+ *   The backend already has CORS enabled, so the browser can call it directly.
  *
- * Usage:
- *   const sse = useSSE();
- *   const { url, body } = actionSetupArgocd();
- *   sse.start(url, body, (event) => { ... });
+ * Configure with frontend/.env.local:
+ *   NEXT_PUBLIC_BACKEND_URL=http://localhost:3001
  */
+
+const BACKEND = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:3001').replace(/\/$/, '');
+const u = (p: string) => `${BACKEND}${p}`;
+const seg = encodeURIComponent;
 
 export interface ActionRequest {
   url: string;
@@ -16,21 +22,11 @@ export interface ActionRequest {
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
-
-export function actionSetupArgocd(): ActionRequest {
-  return { url: '/api/setup/argocd' };
-}
-
-export function actionSetupKeda(): ActionRequest {
-  return { url: '/api/setup/keda' };
-}
-
-export function actionSetupObservability(): ActionRequest {
-  return { url: '/api/setup/observability' };
-}
+export const actionSetupArgocd = (): ActionRequest => ({ url: u('/api/setup/argocd') });
+export const actionSetupKeda = (): ActionRequest => ({ url: u('/api/setup/keda') });
+export const actionSetupObservability = (): ActionRequest => ({ url: u('/api/setup/observability') });
 
 // ── Onboard ───────────────────────────────────────────────────────────────────
-
 export interface OnboardPayload {
   repoUrl: string;
   branch: string;
@@ -40,102 +36,64 @@ export interface OnboardPayload {
   port?: number;
   replicas?: number;
   envVars?: { key: string; value: string }[];
-  /** Secret NAMES only — values are never sent through the API */
+  /** Secret NAMES only — values are generated server-side and never sent through the API */
   secretNames?: string[];
 }
 
-export function actionOnboard(payload: OnboardPayload): ActionRequest {
-  return { url: '/api/onboard', body: payload as unknown as Record<string, unknown> };
-}
+export const actionOnboard = (payload: OnboardPayload): ActionRequest => ({
+  url: u('/api/onboard'),
+  body: payload as unknown as Record<string, unknown>,
+});
 
 // ── Service lifecycle ─────────────────────────────────────────────────────────
+export const actionBuild = (service: string, branch?: string): ActionRequest => ({
+  url: u(`/api/build/${seg(service)}`),
+  body: branch ? { branch } : undefined,
+});
 
-export function actionBuild(service: string, branch?: string): ActionRequest {
-  return {
-    url: `/api/build/${encodeURIComponent(service)}`,
-    body: branch ? { branch } : undefined,
-  };
-}
+export const actionDeploy = (service: string, opts?: { replicas?: number }): ActionRequest => ({
+  url: u(`/api/deploy/${seg(service)}`),
+  body: opts ?? undefined,
+});
 
-export function actionDeploy(
-  service: string,
-  opts?: { replicas?: number; tag?: string },
-): ActionRequest {
-  return {
-    url: `/api/deploy/${encodeURIComponent(service)}`,
-    body: opts ?? undefined,
-  };
-}
-
-export function actionRegisterGitops(
+export const actionRegisterGitops = (
   service: string,
   opts?: { repoUrl?: string; branch?: string },
-): ActionRequest {
-  return {
-    url: `/api/gitops/${encodeURIComponent(service)}`,
-    body: opts ?? undefined,
-  };
-}
+): ActionRequest => ({ url: u(`/api/gitops/${seg(service)}`), body: opts ?? undefined });
 
-export function actionConfigureAutoscaling(
+export const actionConfigureAutoscaling = (
   service: string,
-  opts?: {
-    minReplicas?: number;
-    maxReplicas?: number;
-    metric?: string;
-    threshold?: number;
-  },
-): ActionRequest {
-  return {
-    url: `/api/autoscaling/${encodeURIComponent(service)}`,
-    body: opts ?? undefined,
-  };
-}
+  opts?: { minReplicas?: number; maxReplicas?: number; trigger?: 'cpu' | 'memory' | 'http' | 'cron'; threshold?: number },
+): ActionRequest => ({ url: u(`/api/autoscaling/${seg(service)}`), body: opts ?? undefined });
 
-export function actionConfigureMonitoring(
+export const actionConfigureMonitoring = (
   service: string,
   opts?: { port?: number; path?: string },
-): ActionRequest {
-  return {
-    url: `/api/monitoring/${encodeURIComponent(service)}`,
-    body: opts ?? undefined,
-  };
-}
+): ActionRequest => ({ url: u(`/api/monitoring/${seg(service)}`), body: opts ?? undefined });
 
-export function actionRestartService(service: string): ActionRequest {
-  return { url: `/api/services/${encodeURIComponent(service)}/restart` };
-}
+export const actionRestartService = (service: string): ActionRequest => ({
+  url: u(`/api/services/${seg(service)}/restart`),
+});
 
-export function actionRotateSecret(service: string, secretName: string): ActionRequest {
-  return {
-    url: `/api/secrets/${encodeURIComponent(service)}/rotate`,
-    body: { secretName },
-  };
-}
+export const actionRotateSecret = (service: string, secretName: string): ActionRequest => ({
+  url: u(`/api/secrets/${seg(service)}/rotate`),
+  body: { secretName },
+});
 
 // ── Migrations ────────────────────────────────────────────────────────────────
-
 export type MigrationPhase = 'expand' | 'verify' | 'contract';
 
-export function actionRunMigration(
+export const actionRunMigration = (
   service: string,
   phase: MigrationPhase,
   migrationId?: string,
-): ActionRequest {
-  return {
-    url: `/api/migrate/${encodeURIComponent(service)}`,
-    body: { phase, ...(migrationId ? { migrationId } : {}) },
-  };
-}
+): ActionRequest => ({
+  url: u(`/api/migrate/${seg(service)}`),
+  body: { phase, ...(migrationId ? { migrationId } : {}) },
+});
 
 // ── Resilience ────────────────────────────────────────────────────────────────
-
-export function actionRunResilienceTests(
-  service: string,
-  tests?: string[],
-): ActionRequest {
-  return {
-    url: `/api/resilience/${encodeURIComponent(service)}/run`,
-    body: tests?.length ? { tests } : undefined,
-  };
-}
+export const actionRunResilienceTests = (service: string, tests?: string[]): ActionRequest => ({
+  url: u(`/api/resilience/${seg(service)}/run`),
+  body: tests?.length ? { tests } : undefined,
+});

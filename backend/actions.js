@@ -1,363 +1,312 @@
 'use strict';
+/**
+ * backend/actions.js  (fixed version)
+ *
+ * What was wrong in the original:
+ *  - Every per-service route called the shell scripts with `--name <service>`,
+ *    but build.sh, generate-manifests.sh, gitops-register.sh,
+ *    configure-autoscaling.sh, configure-monitoring.sh, run-migration.sh and
+ *    run-resilience-tests.sh all take the *config file path* as a positional
+ *    argument. They died with "Unknown option: --name".
+ *  - Flag names did not match (--metric/--threshold, --port/--path, --tests,
+ *    --secret, ...).
+ *  - /api/onboard sent env vars and secret names as ONE comma-joined argument;
+ *    onboard.sh expects one --env / --secret flag per item.
+ *  - Scripts ran with cwd = backend/, so manifests were written to
+ *    backend/manifests while the CLI uses <repo>/manifests. Now cwd = repo root.
+ *  - kubectl was hardcoded to /usr/bin/kubectl and /usr/local/bin/kubectl.
+ *  - The backend's own PORT / BRANCH / DB_MODE... env vars leaked into scripts
+ *    (onboard.sh reads PORT, BRANCH, DB_MODE, BUILD_METHOD, SERVICE_NAME from env).
+ *  - No input validation; a service name with "../" could escape manifests/.
+ */
 
 const { spawn } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 
-// Root of the platform directory (backend lives inside platform/backend/)
 const PLATFORM_ROOT = path.resolve(__dirname, '..');
+const MANIFEST_DIR = path.join(PLATFORM_ROOT, 'manifests');
+const APPS_NS = process.env.APPS_NS || 'apps';
 
-/**
- * Resolve a script path relative to the platform root.
- */
-function script(name) {
-  return path.join(PLATFORM_ROOT, name);
+const SERVICE_RE = /^[a-z][a-z0-9-]{1,51}$/;
+const BRANCH_RE = /^[A-Za-z0-9._\/-]+$/;
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SECRET_KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+const RESILIENCE_TESTS = ['pod-failure', 'network-partition', 'resource-exhaustion'];
+
+const script = (name) => path.join(PLATFORM_ROOT, name);
+const confFor = (svc) => path.join(MANIFEST_DIR, `${svc}.onboard.conf`);
+
+/** Environment for child scripts: inherit PATH/HOME/KUBECONFIG, drop names the scripts read as inputs. */
+function childEnv(extra = {}) {
+  const env = { ...process.env };
+  for (const k of ['PORT', 'BRANCH', 'REPO_URL', 'SERVICE_NAME', 'DB_MODE', 'BUILD_METHOD', 'REPLICAS']) {
+    delete env[k];
+  }
+  return { ...env, NON_INTERACTIVE: 'true', GIT_TERMINAL_PROMPT: '0', ...extra };
 }
 
-/**
- * Set SSE headers and flush so the client starts receiving immediately.
- */
+// ── SSE plumbing ────────────────────────────────────────────────────────────
+
 function initSSE(res) {
   res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering if present
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
+  // Keep proxies / browsers from closing an idle stream during long builds.
+  const hb = setInterval(() => { if (!res.writableEnded) res.write(': keepalive\n\n'); }, 15000);
+  res.on('close', () => clearInterval(hb));
 }
 
-/**
- * Write one SSE event line.
- */
 function send(res, obj) {
-  res.write(`data: ${JSON.stringify(obj)}\n\n`);
+  if (!res.writableEnded) res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
 
 /**
- * Spawn a shell script, pipe stdout/stderr as SSE log events, and emit
- * done/error at the end.
- *
- * @param {import('express').Response} res
- * @param {string} scriptPath  - absolute path to the script
- * @param {string[]} args      - positional arguments
- * @param {Record<string,string>} env - extra env vars (never secrets in args)
+ * Run steps one after another, streaming output as SSE.
+ * step = { cmd: string, args: string[], env?: object, isScript?: boolean }
+ * Scripts are run through `bash` so a missing executable bit does not break them.
  */
-function runScriptSSE(res, scriptPath, args = [], env = {}) {
+function runSteps(res, steps) {
   initSSE(res);
+  let finished = false;
+  let current = null;
 
-  // Confirm to the client which script is running
-  send(res, { type: 'log', line: `▶ ${path.basename(scriptPath)} ${args.join(' ')}\n` });
-
-  const child = spawn(scriptPath, args, {
-    env: { ...process.env, ...env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false,
-  });
-
-  // Buffer partial lines so each SSE event is a full line
-  let stdoutBuf = '';
-  let stderrBuf = '';
-
-  function flushLines(buf, addLine) {
-    const parts = buf.split('\n');
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (parts[i]) addLine(parts[i] + '\n');
-    }
-    return parts[parts.length - 1]; // leftover partial line
-  }
-
-  child.stdout.on('data', (chunk) => {
-    stdoutBuf += chunk.toString();
-    stdoutBuf = flushLines(stdoutBuf, (line) => send(res, { type: 'log', line }));
-  });
-
-  child.stderr.on('data', (chunk) => {
-    stderrBuf += chunk.toString();
-    stderrBuf = flushLines(stderrBuf, (line) => send(res, { type: 'log', line }));
-  });
-
-  child.on('close', (code) => {
-    // Flush any remaining partial lines
-    if (stdoutBuf) send(res, { type: 'log', line: stdoutBuf });
-    if (stderrBuf) send(res, { type: 'log', line: stderrBuf });
-    send(res, { type: 'done', ok: code === 0, exitCode: code });
-    res.end();
-  });
-
-  child.on('error', (err) => {
-    send(res, { type: 'error', message: err.message });
-    res.end();
-  });
-
-  // If the HTTP connection drops, kill the child to avoid orphan processes
   res.on('close', () => {
-    if (!child.killed) child.kill('SIGTERM');
+    if (!finished && current && !current.killed) current.kill('SIGTERM');
   });
-}
 
-// ---------------------------------------------------------------------------
-// Individual action helpers — each calls runScriptSSE with the right script
-// and pulls its arguments from the Express request.
-// ---------------------------------------------------------------------------
-
-/**
- * POST /api/setup/argocd
- * Body: (none required)
- */
-function setupArgocd(req, res) {
-  runScriptSSE(res, script('setup-argocd.sh'), []);
-}
-
-/**
- * POST /api/setup/keda
- * Body: (none required)
- */
-function setupKeda(req, res) {
-  runScriptSSE(res, script('setup-keda.sh'), []);
-}
-
-/**
- * POST /api/setup/observability
- * Body: (none required)
- */
-function setupObservability(req, res) {
-  runScriptSSE(res, script('setup-observability.sh'), []);
-}
-
-
-function runChained(res, steps) {
-  if (steps.length === 0) {
-    send(res, { type: 'done', ok: true });
+  const finish = (obj) => {
+    if (finished) return;
+    finished = true;
+    send(res, obj);
     res.end();
-    return;
-  }
+  };
 
-  const [current, ...rest] = steps;
-  send(res, { type: 'log', line: `\n▶ ${path.basename(current.path)} ${current.args.join(' ')}\n` });
+  const next = (i) => {
+    if (i >= steps.length) return finish({ type: 'done', ok: true, exitCode: 0 });
 
-  const child = spawn(current.path, current.args, {
-    env: { ...process.env },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    shell: false,
-  });
+    const step = steps[i];
+    const cmd = step.isScript ? 'bash' : step.cmd;
+    const args = step.isScript ? [step.cmd, ...step.args] : step.args;
+    send(res, { type: 'log', line: `\n▶ ${path.basename(step.cmd)} ${step.args.join(' ')}\n` });
 
-  let buf = '';
-  function flush(chunk) {
-    buf += chunk.toString();
-    const parts = buf.split('\n');
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (parts[i]) send(res, { type: 'log', line: parts[i] + '\n' });
-    }
-    buf = parts[parts.length - 1];
-  }
+    current = spawn(cmd, args, {
+      cwd: PLATFORM_ROOT,
+      env: childEnv(step.env),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+    });
 
-  child.stdout.on('data', flush);
-  child.stderr.on('data', flush);
+    let buf = '';
+    const onData = (chunk) => {
+      buf += chunk.toString();
+      const parts = buf.split('\n');
+      buf = parts.pop();
+      for (const p of parts) if (p) send(res, { type: 'log', line: p + '\n' });
+    };
+    current.stdout.on('data', onData);
+    current.stderr.on('data', onData);
 
-  child.on('close', (code) => {
-    if (buf) send(res, { type: 'log', line: buf });
-    if (code !== 0) {
-      send(res, { type: 'done', ok: false, exitCode: code });
-      res.end();
-      return;
-    }
-    runChained(res, rest);
-  });
+    current.on('error', (err) => finish({ type: 'error', message: `${cmd}: ${err.message}` }));
+    current.on('close', (code) => {
+      if (buf) send(res, { type: 'log', line: buf + '\n' });
+      if (code !== 0) return finish({ type: 'done', ok: false, exitCode: code });
+      next(i + 1);
+    });
+  };
 
-  child.on('error', (err) => {
-    send(res, { type: 'error', message: err.message });
-    res.end();
-  });
-
-  res.on('close', () => { if (!child.killed) child.kill('SIGTERM'); });
+  next(0);
 }
 
+const sh = (name, args = [], env) => ({ cmd: script(name), args, env, isScript: true });
+const kubectl = (args) => ({ cmd: 'kubectl', args });
 
-/**
- * POST /api/onboard
- * Body (JSON):
- *   repoUrl, branch, serviceName, buildMethod, dbMode, port,
- *   replicas, envVars[{key,value}], secretNames[string]
- *
- * Secret VALUES are never accepted here — they are prompted by the shell
- * script itself via kubectl create secret --dry-run, entirely in-memory.
- */
+// ── Validation helpers ──────────────────────────────────────────────────────
+
+function bad(res, message) {
+  res.status(400).json({ error: message });
+}
+
+/** Resolve :service param to its onboarding config, or answer with an error. */
+function requireService(req, res) {
+  const svc = req.params.service;
+  if (!SERVICE_RE.test(svc)) { bad(res, 'invalid service name'); return null; }
+  const conf = confFor(svc);
+  if (!fs.existsSync(conf)) {
+    res.status(404).json({ error: `No onboarding config for "${svc}" (${conf}). Onboard it first.` });
+    return null;
+  }
+  return { svc, conf };
+}
+
+/** Rewrite KEY="value" in an .onboard.conf (used for branch / replicas / repo overrides). */
+function setConfValue(conf, key, value) {
+  const text = fs.readFileSync(conf, 'utf8');
+  const line = `${key}="${value}"`;
+  const re = new RegExp(`^${key}=.*$`, 'm');
+  fs.writeFileSync(conf, re.test(text) ? text.replace(re, line) : `${text}\n${line}\n`);
+}
+
+// ── Setup actions ───────────────────────────────────────────────────────────
+
+const setupArgocd = (_req, res) => runSteps(res, [sh('setup-argocd.sh')]);
+const setupKeda = (_req, res) => runSteps(res, [sh('setup-keda.sh')]);
+const setupObservability = (_req, res) => runSteps(res, [sh('setup-observability.sh')]);
+
+// ── Onboard: onboard.sh -> build.sh -> generate-manifests.sh -> kubectl apply ─
+
 function onboardService(req, res) {
   const {
     repoUrl, branch, serviceName,
     buildMethod = 'auto', dbMode = 'none',
-    port = '8080', replicas = '1',
+    port = 8080, replicas = 1,
     envVars = [], secretNames = [],
   } = req.body || {};
 
-  if (!repoUrl || !branch || !serviceName) {
-    res.status(400).json({ error: 'repoUrl, branch, and serviceName are required' });
-    return;
-  }
+  if (!repoUrl || !branch || !serviceName) return bad(res, 'repoUrl, branch, and serviceName are required');
+  if (!SERVICE_RE.test(serviceName)) return bad(res, 'serviceName must start with a letter; lowercase letters, digits, hyphens; 2–52 chars');
+  if (!/^(https?:\/\/|git@|ssh:\/\/)\S+$/.test(repoUrl)) return bad(res, 'repoUrl must be an http(s) or ssh git URL');
+  if (!BRANCH_RE.test(branch)) return bad(res, 'invalid branch name');
+  if (!['auto', 'buildpacks', 'dockerfile'].includes(buildMethod)) return bad(res, 'invalid buildMethod');
+  if (!['none', 'isolated', 'shared'].includes(dbMode)) return bad(res, 'invalid dbMode');
+  const portN = parseInt(port, 10);
+  const repN = parseInt(replicas, 10);
+  if (!(portN >= 1 && portN <= 65535)) return bad(res, 'port must be 1–65535');
+  if (!(repN >= 1)) return bad(res, 'replicas must be >= 1');
+  for (const e of envVars) if (!ENV_KEY_RE.test(e.key || '')) return bad(res, `invalid env var name: ${e.key}`);
+  for (const s of secretNames) if (!SECRET_KEY_RE.test(s)) return bad(res, `invalid secret name: ${s}`);
 
-  const envVarStr = envVars.map((e) => `${e.key}=${e.value}`).join(',');
-  const secretStr = secretNames.join(',');
-
-  const onboardArgs = [
+  const args = [
     '--repo', repoUrl, '--branch', branch, '--name', serviceName,
     '--build-method', buildMethod, '--db-mode', dbMode,
-    '--port', String(port), '--replicas', String(replicas),
-    '--non-interactive',
+    '--port', String(portN), '--replicas', String(repN),
+    '--output-dir', MANIFEST_DIR, '--non-interactive',
   ];
-  if (envVarStr) onboardArgs.push('--env', envVarStr);
-  if (secretStr) onboardArgs.push('--secret', secretStr);
+  // One flag per item (onboard.sh appends each to an array)
+  for (const e of envVars) args.push('--env', `${e.key}=${e.value ?? ''}`);
+  for (const s of secretNames) args.push('--secret', s);
 
-  const confPath = `manifests/${serviceName}.onboard.conf`;
-
-  initSSE(res);
-
-  // Step 1: onboard
-  runChained(res, [
-    { path: script('onboard.sh'),            args: onboardArgs },
-    { path: script('build.sh'),              args: [confPath] },
-    { path: script('generate-manifests.sh'), args: [confPath] },
-    { path: '/usr/bin/kubectl',              args: ['apply', '-k', `manifests/${serviceName}/`] },
+  const conf = confFor(serviceName);
+  runSteps(res, [
+    sh('onboard.sh', args),
+    sh('build.sh', [conf]),
+    sh('generate-manifests.sh', [conf]),
+    kubectl(['apply', '-k', path.join(MANIFEST_DIR, serviceName)]),
   ]);
 }
 
-/**
- * POST /api/build/:service
- * Body: { branch? }
- */
+// ── Per-service lifecycle (all use the positional conf path) ────────────────
+
 function buildService(req, res) {
-  const { service } = req.params;
+  const s = requireService(req, res); if (!s) return;
   const { branch } = req.body || {};
-  const args = ['--name', service];
-  if (branch) args.push('--branch', branch);
-  runScriptSSE(res, script('build.sh'), args);
-}
-
-/**
- * POST /api/deploy/:service
- * Body: { replicas?, tag? }
- */
-function deployService(req, res) {
-  const { service } = req.params;
-  const { replicas, tag } = req.body || {};
-  const args = ['--name', service];
-  if (replicas) args.push('--replicas', String(replicas));
-  if (tag) args.push('--tag', tag);
-  runScriptSSE(res, script('generate-manifests.sh'), args);
-}
-
-/**
- * POST /api/gitops/:service
- * Body: { repoUrl?, branch? }
- */
-function registerGitops(req, res) {
-  const { service } = req.params;
-  const { repoUrl, branch } = req.body || {};
-  const args = ['--name', service];
-  if (repoUrl) args.push('--repo', repoUrl);
-  if (branch) args.push('--branch', branch);
-  runScriptSSE(res, script('gitops-register.sh'), args);
-}
-
-/**
- * POST /api/autoscaling/:service
- * Body: { minReplicas?, maxReplicas?, metric?, threshold? }
- */
-function configureAutoscaling(req, res) {
-  const { service } = req.params;
-  const { minReplicas, maxReplicas, metric, threshold } = req.body || {};
-  const args = ['--name', service];
-  if (minReplicas) args.push('--min', String(minReplicas));
-  if (maxReplicas) args.push('--max', String(maxReplicas));
-  if (metric) args.push('--metric', metric);
-  if (threshold) args.push('--threshold', String(threshold));
-  runScriptSSE(res, script('configure-autoscaling.sh'), args);
-}
-
-/**
- * POST /api/monitoring/:service
- * Body: { port?, path? }
- */
-function configureMonitoring(req, res) {
-  const { service } = req.params;
-  const { port, path: metricPath } = req.body || {};
-  const args = ['--name', service];
-  if (port) args.push('--port', String(port));
-  if (metricPath) args.push('--path', metricPath);
-  runScriptSSE(res, script('configure-monitoring.sh'), args);
-}
-
-/**
- * POST /api/migrate/:service
- * Body: { phase: 'expand' | 'verify' | 'contract', migrationId? }
- */
-function runMigration(req, res) {
-  const { service } = req.params;
-  const { phase = 'expand', migrationId } = req.body || {};
-
-  if (!['expand', 'verify', 'contract'].includes(phase)) {
-    res.status(400).json({ error: 'phase must be expand, verify, or contract' });
-    return;
+  if (branch) {
+    if (!BRANCH_RE.test(branch)) return bad(res, 'invalid branch name');
+    setConfValue(s.conf, 'BRANCH', branch);
   }
-
-  const args = ['--name', service, '--phase', phase];
-  if (migrationId) args.push('--id', migrationId);
-  runScriptSSE(res, script('run-migration.sh'), args);
+  runSteps(res, [sh('build.sh', [s.conf])]);
 }
 
-/**
- * POST /api/resilience/:service/run
- * Body: { tests?: string[] }  — optional subset of tests to run
- */
-function runResilienceTests(req, res) {
-  const { service } = req.params;
-  const { tests } = req.body || {};
-  const args = ['--name', service];
-  if (Array.isArray(tests) && tests.length) args.push('--tests', tests.join(','));
-  runScriptSSE(res, script('run-resilience-tests.sh'), args);
-}
-
-/**
- * POST /api/services/:service/restart
- * Body: (none required)
- * Does a rollout restart — does not call a shell script, uses kubectl directly.
- */
-function restartService(req, res) {
-  const { service } = req.params;
-  // Inline kubectl call — no secret data, safe to do directly
-  runScriptSSE(res, '/usr/local/bin/kubectl', [
-    'rollout', 'restart',
-    `deployment/${service}`,
-    '-n', 'apps',
+function deployService(req, res) {
+  const s = requireService(req, res); if (!s) return;
+  const { replicas } = req.body || {};
+  if (replicas) {
+    const n = parseInt(replicas, 10);
+    if (!(n >= 1)) return bad(res, 'replicas must be >= 1');
+    setConfValue(s.conf, 'REPLICAS', String(n));
+  }
+  runSteps(res, [
+    sh('generate-manifests.sh', [s.conf]),
+    kubectl(['apply', '-k', path.join(MANIFEST_DIR, s.svc)]),
   ]);
 }
 
-/**
- * POST /api/secrets/:service/rotate
- * Body: { secretName }
- * Secret values are never passed through the API — the script handles prompting
- * entirely server-side via kubectl create secret --dry-run=client -o yaml | kubectl apply -f -
- */
-function rotateSecret(req, res) {
-  const { service } = req.params;
-  const { secretName } = req.body || {};
-  if (!secretName) {
-    res.status(400).json({ error: 'secretName is required' });
-    return;
+function registerGitops(req, res) {
+  const s = requireService(req, res); if (!s) return;
+  const { repoUrl, branch } = req.body || {};
+  if (repoUrl) {
+    if (!/^(https?:\/\/|git@|ssh:\/\/)\S+$/.test(repoUrl)) return bad(res, 'invalid repoUrl');
+    setConfValue(s.conf, 'REPO_URL', repoUrl);
   }
-  runScriptSSE(res, script('rotate-secret.sh'), ['--name', service, '--secret', secretName]);
+  if (branch) {
+    if (!BRANCH_RE.test(branch)) return bad(res, 'invalid branch name');
+    setConfValue(s.conf, 'BRANCH', branch);
+  }
+  runSteps(res, [sh('gitops-register.sh', [s.conf])]);
+}
+
+function configureAutoscaling(req, res) {
+  const s = requireService(req, res); if (!s) return;
+  const { minReplicas, maxReplicas, metric, trigger, threshold } = req.body || {};
+  const t = trigger || metric || 'cpu';
+  if (!['cpu', 'memory', 'http', 'cron'].includes(t)) return bad(res, 'trigger must be cpu | memory | http | cron');
+  const args = [s.conf, '--trigger', t];
+  if (minReplicas !== undefined && minReplicas !== '') args.push('--min', String(parseInt(minReplicas, 10)));
+  if (maxReplicas) args.push('--max', String(parseInt(maxReplicas, 10)));
+  if (threshold) {
+    const flag = { cpu: '--cpu-target', memory: '--mem-target', http: '--http-target' }[t];
+    if (flag) args.push(flag, String(parseInt(threshold, 10)));
+  }
+  runSteps(res, [sh('configure-autoscaling.sh', args)]);
+}
+
+function configureMonitoring(req, res) {
+  const s = requireService(req, res); if (!s) return;
+  const { port, path: metricPath } = req.body || {};
+  const args = [s.conf];
+  if (port) args.push('--metrics-port', String(parseInt(port, 10)));
+  if (metricPath) {
+    if (!/^\/[A-Za-z0-9._\/-]*$/.test(metricPath)) return bad(res, 'invalid metrics path');
+    args.push('--metrics-path', metricPath);
+  }
+  runSteps(res, [sh('configure-monitoring.sh', args)]);
+}
+
+function runMigration(req, res) {
+  const s = requireService(req, res); if (!s) return;
+  const { phase = 'expand', migrationId } = req.body || {};
+  if (!['expand', 'verify', 'contract', 'all'].includes(phase)) return bad(res, 'phase must be expand, verify, contract or all');
+  const args = [s.conf, '--phase', phase];
+  if (migrationId) {
+    if (!/^[A-Za-z0-9._-]+$/.test(migrationId)) return bad(res, 'invalid migrationId');
+    args.push('--id', migrationId);
+  }
+  runSteps(res, [sh('run-migration.sh', args)]);
+}
+
+function runResilienceTests(req, res) {
+  const s = requireService(req, res); if (!s) return;
+  const { tests } = req.body || {};
+  if (!Array.isArray(tests) || tests.length === 0) {
+    return runSteps(res, [sh('run-resilience-tests.sh', [s.conf])]); // all three, one stored run
+  }
+  for (const t of tests) if (!RESILIENCE_TESTS.includes(t)) return bad(res, `unknown test: ${t}`);
+  // The script runs one test per --test flag, so a subset runs sequentially (one stored run each).
+  runSteps(res, tests.map((t) => sh('run-resilience-tests.sh', [s.conf, '--test', t])));
+}
+
+function restartService(req, res) {
+  const svc = req.params.service;
+  if (!SERVICE_RE.test(svc)) return bad(res, 'invalid service name');
+  runSteps(res, [kubectl(['rollout', 'restart', `deployment/${svc}`, '-n', APPS_NS])]);
+}
+
+function rotateSecret(req, res) {
+  const svc = req.params.service;
+  const { secretName } = req.body || {};
+  if (!SERVICE_RE.test(svc)) return bad(res, 'invalid service name');
+  if (!secretName || !SECRET_KEY_RE.test(secretName)) return bad(res, 'valid secretName is required');
+  // Value is auto-generated by the script when no TTY is attached; it never travels through the API.
+  runSteps(res, [sh('rotate-secret.sh', ['--service', svc, '--key', secretName])]);
 }
 
 module.exports = {
-  runScriptSSE,
-  setupArgocd,
-  setupKeda,
-  setupObservability,
-  onboardService,
-  buildService,
-  deployService,
-  registerGitops,
-  configureAutoscaling,
-  configureMonitoring,
-  runMigration,
-  runResilienceTests,
-  restartService,
-  rotateSecret,
+  runSteps,
+  setupArgocd, setupKeda, setupObservability,
+  onboardService, buildService, deployService, registerGitops,
+  configureAutoscaling, configureMonitoring,
+  runMigration, runResilienceTests,
+  restartService, rotateSecret,
 };

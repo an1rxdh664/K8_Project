@@ -1,5 +1,11 @@
-// Platform Dashboard — Backend API
+// Platform Dashboard — Backend API  (fixed version)
 // Reads live cluster state via kubectl. Never writes secrets.
+//
+// Changes vs original (search for "FIX"):
+//  1. Logs: pods are labelled app.kubernetes.io/name (by generate-manifests.sh), not "app".
+//  2. Migrations: run-migration.sh stores "succeeded"/"timeout"; the API only knew "success".
+//  3. Resilience: run-resilience-tests.sh stores {run_id, tests:{name:"pass"}, passed, failed};
+//     the frontend type expects {id, overallStatus, tests:[{name,status,...}]} and crashed on .map().
 'use strict';
 
 const express = require('express');
@@ -15,89 +21,58 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ── Health ───────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// ── Cluster Status ────────────────────────────────────────────────────────────
 app.get('/api/status', async (_req, res) => {
-  try {
-    const status = await cluster.getClusterStatus();
-    res.json(status);
-  } catch (err) {
-    console.error('/api/status error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+  try { res.json(await cluster.getClusterStatus()); }
+  catch (err) { console.error('/api/status error:', err.message); res.status(500).json({ error: err.message }); }
 });
 
-// ── Services ──────────────────────────────────────────────────────────────────
 app.get('/api/services', async (_req, res) => {
-  try {
-    const services = await cluster.getServices();
-    res.json(services);
-  } catch (err) {
-    console.error('/api/services error:', err.message);
-    res.status(500).json({ error: err.message });
-  }
+  try { res.json(await cluster.getServices()); }
+  catch (err) { console.error('/api/services error:', err.message); res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/services/names', async (_req, res) => {
-  try {
-    const names = await cluster.getServiceNames();
-    res.json(names);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  try { res.json(await cluster.getServiceNames()); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── Logs ──────────────────────────────────────────────────────────────────────
+// ── Logs ─────────────────────────────────────────────────────────────────────
 app.get('/api/logs/:service', async (req, res) => {
   const service = req.params.service;
   const lines   = Math.min(parseInt(req.query.lines || '100', 10), 1000);
 
   try {
-    // Find pods for this deployment
     const podList = await kc.listJson('pods', APPS_NS);
-    const pods    = (podList.items || []).filter(p =>
-      p.metadata?.labels?.app === service &&
+    // FIX 1: label key used by generate-manifests.sh
+    const pods = (podList.items || []).filter(p =>
+      p.metadata?.labels?.['app.kubernetes.io/name'] === service &&
       p.status?.phase === 'Running'
     );
+    if (pods.length === 0) return res.json([]);
 
-    if (pods.length === 0) {
-      return res.json([]);
-    }
+    const podName = pods[0].metadata.name;
+    const rawLogs = await kc.podLogs(podName, APPS_NS, lines);
 
-    // Pick the first ready pod
-    const pod      = pods[0];
-    const podName  = pod.metadata.name;
-    const rawLogs  = await kc.podLogs(podName, APPS_NS, lines);
-
-    // Parse lines into structured entries
-    const entries = rawLogs.split('\n').filter(Boolean).map((line, i) => {
-      // Try to parse JSON logs (common with structured logging)
+    const entries = rawLogs.split('\n').filter(Boolean).map((line) => {
       try {
         const obj = JSON.parse(line);
         return {
           timestamp: obj.time || obj.timestamp || obj.ts || new Date().toISOString(),
-          level:     (obj.level || obj.severity || 'info').toLowerCase(),
+          level:     String(obj.level || obj.severity || 'info').toLowerCase(),
           pod:       podName,
           message:   obj.msg || obj.message || line,
         };
       } catch {
-        // Plain text log line — try to detect level from content
         const lower = line.toLowerCase();
         const level = lower.includes('error') ? 'error'
                     : lower.includes('warn')  ? 'warn'
                     : lower.includes('debug') ? 'debug'
                     : 'info';
-        return {
-          timestamp: new Date().toISOString(),
-          level,
-          pod:       podName,
-          message:   line,
-        };
+        return { timestamp: new Date().toISOString(), level, pod: podName, message: line };
       }
     });
-
     res.json(entries);
   } catch (err) {
     console.error(`/api/logs/${service} error:`, err.message);
@@ -105,29 +80,27 @@ app.get('/api/logs/:service', async (req, res) => {
   }
 });
 
-// ── Migrations ────────────────────────────────────────────────────────────────
-// Migration history is stored in ConfigMap <service>-migration-history
-// key format: <MIGRATION_ID>-<phase> → "<timestamp>|<status>|<notes>"
-
+// ── Migrations ───────────────────────────────────────────────────────────────
+// ConfigMap <service>-migration-history, key "<MIGRATION_ID>-<phase>" -> "<ts>|<status>|<notes>"
 function parseMigrationCm(service, data) {
   const runs = [];
   for (const [key, value] of Object.entries(data)) {
-    // key: <id>-<phase>
     const lastDash = key.lastIndexOf('-');
     if (lastDash === -1) continue;
     const id    = key.slice(0, lastDash);
     const phase = key.slice(lastDash + 1);
     const [timestamp, status, ...notesParts] = value.split('|');
+    // FIX 2: the script writes succeeded | failed | timeout
+    const mapped = (status === 'succeeded' || status === 'success') ? 'success'
+                 : (status === 'failed' || status === 'timeout')    ? 'failed'
+                 : 'running';
     runs.push({
-      id,
-      service,
-      phase,
-      status: status === 'success' ? 'success' : status === 'failed' ? 'failed' : 'running',
+      id, service, phase,
+      status: mapped,
       timestamp: timestamp || new Date().toISOString(),
       notes: notesParts.join('|') || undefined,
     });
   }
-  // Newest first
   runs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   return runs;
 }
@@ -137,8 +110,7 @@ app.get('/api/migrations', async (_req, res) => {
     const names  = await cluster.getServiceNames();
     const result = {};
     await Promise.all(names.map(async (svc) => {
-      const data = await kc.getConfigMapData(`${svc}-migration-history`, APPS_NS);
-      result[svc] = parseMigrationCm(svc, data);
+      result[svc] = parseMigrationCm(svc, await kc.getConfigMapData(`${svc}-migration-history`, APPS_NS));
     }));
     res.json(result);
   } catch (err) {
@@ -149,31 +121,45 @@ app.get('/api/migrations', async (_req, res) => {
 
 app.get('/api/migrations/:service', async (req, res) => {
   const svc = req.params.service;
-  try {
-    const data = await kc.getConfigMapData(`${svc}-migration-history`, APPS_NS);
-    res.json(parseMigrationCm(svc, data));
-  } catch (err) {
-    console.error(`/api/migrations/${svc} error:`, err.message);
-    res.status(500).json({ error: err.message });
-  }
+  try { res.json(parseMigrationCm(svc, await kc.getConfigMapData(`${svc}-migration-history`, APPS_NS))); }
+  catch (err) { console.error(`/api/migrations/${svc} error:`, err.message); res.status(500).json({ error: err.message }); }
 });
 
-// ── Resilience Results ────────────────────────────────────────────────────────
-// Stored in ConfigMap <service>-resilience-results
-// key: <RUN_ID> → JSON string of run object
-
+// ── Resilience results ───────────────────────────────────────────────────────
+// FIX 3: convert the script's JSON into the shape the frontend expects.
 function parseResilienceCm(service, data) {
   const runs = [];
-  for (const [, value] of Object.entries(data)) {
-    try {
-      const run = JSON.parse(value);
-      runs.push(run);
-    } catch {
-      // Skip malformed entries
-    }
+  for (const [key, value] of Object.entries(data)) {
+    let r;
+    try { r = JSON.parse(value); } catch { continue; }
+
+    const raw = r.tests || {};
+    const tests = Array.isArray(raw)
+      ? raw
+      : Object.entries(raw)
+          .filter(([, s]) => s !== 'skipped')
+          .map(([name, s]) => ({
+            name,
+            status: (s === 'pass' || s === 'passed') ? 'passed' : 'failed',
+            recoveryTimeMs: r.details?.[name]?.recoveryTimeMs,
+            details: r.details?.[name]?.text,
+          }));
+
+    const passed = tests.filter(t => t.status === 'passed').length;
+    const overallStatus = tests.length === 0 ? 'failed'
+                        : passed === tests.length ? 'passed'
+                        : passed === 0 ? 'failed' : 'partial';
+
+    runs.push({
+      id: r.id || r.run_id || key,
+      service: r.service || service,
+      timestamp: r.timestamp || '',
+      overallStatus,
+      tests,
+    });
   }
   runs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-  return runs.slice(0, 10); // Last 10 runs
+  return runs.slice(0, 10);
 }
 
 app.get('/api/resilience', async (_req, res) => {
@@ -181,8 +167,7 @@ app.get('/api/resilience', async (_req, res) => {
     const names  = await cluster.getServiceNames();
     const result = {};
     await Promise.all(names.map(async (svc) => {
-      const data = await kc.getConfigMapData(`${svc}-resilience-results`, APPS_NS);
-      result[svc] = parseResilienceCm(svc, data);
+      result[svc] = parseResilienceCm(svc, await kc.getConfigMapData(`${svc}-resilience-results`, APPS_NS));
     }));
     res.json(result);
   } catch (err) {
@@ -193,53 +178,26 @@ app.get('/api/resilience', async (_req, res) => {
 
 app.get('/api/resilience/:service', async (req, res) => {
   const svc = req.params.service;
-  try {
-    const data = await kc.getConfigMapData(`${svc}-resilience-results`, APPS_NS);
-    res.json(parseResilienceCm(svc, data));
-  } catch (err) {
-    console.error(`/api/resilience/${svc} error:`, err.message);
-    res.status(500).json({ error: err.message });
-  }
+  try { res.json(parseResilienceCm(svc, await kc.getConfigMapData(`${svc}-resilience-results`, APPS_NS))); }
+  catch (err) { console.error(`/api/resilience/${svc} error:`, err.message); res.status(500).json({ error: err.message }); }
 });
 
-// ── Action Routes (SSE) ───────────────────────────────────────────────────────
-// All POST routes below stream output via Server-Sent Events.
-// The browser connects, receives a stream of JSON lines, and the connection
-// closes when the script finishes.
-//
-// Event format:
-//   data: {"type":"log","line":"..."}        — stdout/stderr line
-//   data: {"type":"progress","step":"...","pct":40}  — optional progress hint
-//   data: {"type":"done","ok":true}          — script exited 0
-//   data: {"type":"done","ok":false,"exitCode":1}    — script failed
-//   data: {"type":"error","message":"..."}   — spawn error
-//
-// IMPORTANT: secret values are NEVER accepted by these routes.
-// Secrets travel exclusively in-memory inside shell scripts via:
-//   kubectl create secret --dry-run=client -o yaml | kubectl apply -f -
-
-// Setup — install cluster components
+// ── Action routes (SSE) ──────────────────────────────────────────────────────
 app.post('/api/setup/argocd',        actions.setupArgocd);
 app.post('/api/setup/keda',          actions.setupKeda);
 app.post('/api/setup/observability', actions.setupObservability);
 
-// Service lifecycle
-app.post('/api/onboard',                       actions.onboardService);
-app.post('/api/build/:service',                actions.buildService);
-app.post('/api/deploy/:service',               actions.deployService);
-app.post('/api/gitops/:service',               actions.registerGitops);
-app.post('/api/autoscaling/:service',          actions.configureAutoscaling);
-app.post('/api/monitoring/:service',           actions.configureMonitoring);
-app.post('/api/services/:service/restart',     actions.restartService);
-app.post('/api/secrets/:service/rotate',       actions.rotateSecret);
+app.post('/api/onboard',                   actions.onboardService);
+app.post('/api/build/:service',            actions.buildService);
+app.post('/api/deploy/:service',           actions.deployService);
+app.post('/api/gitops/:service',           actions.registerGitops);
+app.post('/api/autoscaling/:service',      actions.configureAutoscaling);
+app.post('/api/monitoring/:service',       actions.configureMonitoring);
+app.post('/api/services/:service/restart', actions.restartService);
+app.post('/api/secrets/:service/rotate',   actions.rotateSecret);
+app.post('/api/migrate/:service',          actions.runMigration);
+app.post('/api/resilience/:service/run',   actions.runResilienceTests);
 
-// Migrations — expand-contract pattern
-app.post('/api/migrate/:service',              actions.runMigration);
-
-// Resilience tests
-app.post('/api/resilience/:service/run',       actions.runResilienceTests);
-
-// ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Platform Dashboard backend listening on :${PORT}`);
   console.log(`  APPS_NS:     ${APPS_NS}`);
