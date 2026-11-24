@@ -1,0 +1,361 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ── */
+:root {
+  /* Light theme (default) */
+  --bg: #FAF9F6;
+  --bg-elevated: #FFFFFF;
+  --border: #E8E4DD;
+  --border-strong: #D8D2C7;
+  --text: #2B2824;
+  --text-muted: #78736A;
+  --accent: #C96442;
+  --accent-soft: rgba(201, 100, 66, 0.12);
+  --success: #4F7556;
+  --danger: #B3473C;
+  --sidebar-width: 220px;
+}
+
+[data-theme="dark"] {
+  --bg: #1E1C1A;
+  --bg-elevated: #262320;
+  --border: #3A3631;
+  --border-strong: #4A453E;
+  --text: #ECE8E1;
+  --text-muted: #A39C8F;
+  --accent: #C96442;
+  --accent-soft: rgba(201, 100, 66, 0.15);
+  --success: #7FAE86;
+  --danger: #D98673;
+}
+
+/* ── Base ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ── Layout ── */
+.layout {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+
+.content {
+  flex: 999 1 560px;
+  min-width: 0;
+  padding: 32px;
+  overflow-y: auto;
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px;
+  transition: border-color 150ms ease;
+}
+.card:hover {
+  border-color: var(--border-strong);
+}
+
+/* ── Buttons ── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 150ms ease, transform 150ms ease, opacity 150ms ease;
+  user-select: none;
+}
+.btn:active {
+  transform: scale(0.97);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 85%, black);
+}
+
+.btn-secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--bg);
+  border-color: var(--border-strong);
+}
+
+/* ── Status dot ── */
+.status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.healthy  { background: var(--success); }
+.status-dot.error    { background: var(--danger); }
+.status-dot.pending  { background: var(--text-muted); }
+.status-dot.running  { background: var(--accent); }
+
+/* ── Progress bar ── */
+.progress-bar {
+  height: 3px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 400ms ease;
+}
+
+/* ── Step list ── */
+.step-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+}
+.step-item + .step-item {
+  border-top: 1px solid var(--border);
+}
+
+.step-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.step-icon.pending {
+  border: 1.5px solid var(--border-strong);
+}
+.step-icon.active {
+  border: 1.5px solid var(--accent);
+  animation: spin-ring 1s linear infinite;
+}
+.step-icon.done {
+  background: var(--success);
+}
+.step-icon.failed {
+  background: var(--danger);
+}
+
+@keyframes spin-ring {
+  0%   { border-color: var(--accent) transparent transparent transparent; }
+  25%  { border-color: var(--accent) var(--accent) transparent transparent; }
+  50%  { border-color: var(--accent) var(--accent) var(--accent) transparent; }
+  75%  { border-color: var(--accent) var(--accent) var(--accent) var(--accent); }
+  100% { border-color: var(--accent) transparent transparent transparent; }
+}
+
+/* ── Step fade-in ── */
+@keyframes step-appear {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.step-appear {
+  animation: step-appear 280ms ease forwards;
+}
+
+/* ── Section title ── */
+.section-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 18px;
+}
+
+/* ── Mono text ── */
+.mono {
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+}
+
+/* ── Log output ── */
+.log-output {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* ── Badge ── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.badge-success {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+.badge-danger {
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+  color: var(--danger);
+}
+.badge-muted {
+  background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+  color: var(--text-muted);
+}
+.badge-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ── Table ── */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.data-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.data-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+.data-table tr:hover td {
+  background: var(--bg);
+}
+
+/* ── Theme toggle pill ── */
+.theme-toggle {
+  position: relative;
+  width: 40px;
+  height: 22px;
+  background: var(--border-strong);
+  border-radius: 11px;
+  cursor: pointer;
+  border: none;
+  transition: background 200ms ease;
+  flex-shrink: 0;
+}
+.theme-toggle[data-active="true"] {
+  background: var(--accent);
+}
+.theme-toggle-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 200ms ease;
+  pointer-events: none;
+}
+.theme-toggle[data-active="true"] .theme-toggle-knob {
+  transform: translateX(18px);
+}
+
+/* ── Spinner ── */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Responsive ── */
+@media (max-width: 700px) {
+  .layout {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .content {
+    padding: 18px;
+  }
+}

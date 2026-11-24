@@ -1,0 +1,18 @@
+# registry-config.yaml
+# Stores registry address so all platform scripts read it from one place.
+# Populated by setup-cluster.sh; consumed by onboard.sh and build scripts.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-registry
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: registry-config
+data:
+  # Overridable via REGISTRY_HOST / REGISTRY_PORT env vars in setup-cluster.sh
+  registry_host: "localhost"
+  registry_port: "5050"
+  # Full address used in image tags: localhost:5050/<service>:<tag>
+  registry_address: "localhost:5050"

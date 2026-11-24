@@ -1,0 +1,73 @@
+# observability-rbac.yaml
+# Grants Prometheus the ability to scrape metrics from the apps namespace.
+# Applied by setup-observability.sh.
+
+---
+# Allow Prometheus to read pods, services, and endpoints in apps namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-scraper
+  namespace: apps
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: observability
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-scraper
+  namespace: apps
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: observability
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-kube-prometheus-prometheus
+    namespace: observability
+roleRef:
+  kind: Role
+  name: prometheus-scraper
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Allow Prometheus Operator to manage ServiceMonitors cluster-wide
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-servicemonitor-reader
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: observability
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors", "podmonitors", "prometheusrules"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-servicemonitor-reader
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: observability
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-kube-prometheus-prometheus
+    namespace: observability
+roleRef:
+  kind: ClusterRole
+  name: prometheus-servicemonitor-reader
+  apiGroup: rbac.authorization.k8s.io

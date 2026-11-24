@@ -1,0 +1,79 @@
+# argocd-rbac.yaml
+# Grants ArgoCD the permissions it needs to manage resources in the apps namespace.
+# Applied by setup-argocd.sh. No service-specific rules here.
+
+---
+# Allow ArgoCD application controller to manage resources in apps namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: argocd-apps-manager
+  namespace: apps
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: argocd
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "serviceaccounts", "pods", "pods/log"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["keda.sh"]
+    resources: ["scaledobjects", "scaledjobs", "triggerauthentications"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: argocd-apps-manager
+  namespace: apps
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: argocd
+subjects:
+  - kind: ServiceAccount
+    name: argocd-application-controller
+    namespace: argocd
+roleRef:
+  kind: Role
+  name: argocd-apps-manager
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Allow ArgoCD to read namespaces (for app health checks)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-namespace-reader
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: argocd
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-namespace-reader
+  labels:
+    app.kubernetes.io/part-of: k8s-platform
+    app.kubernetes.io/component: argocd
+subjects:
+  - kind: ServiceAccount
+    name: argocd-application-controller
+    namespace: argocd
+roleRef:
+  kind: ClusterRole
+  name: argocd-namespace-reader
+  apiGroup: rbac.authorization.k8s.io
