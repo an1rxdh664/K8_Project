@@ -90,7 +90,7 @@ render_env_vars() {
   local pad
   pad=$(printf '%*s' "$indent" '')
 
-  if [[ ${#ENV_VARS[@]:-0} -eq 0 ]]; then
+  if [[ ${#ENV_VARS[@]} -eq 0 ]]; then
     return
   fi
 
@@ -108,7 +108,7 @@ render_secret_env() {
   local pad
   pad=$(printf '%*s' "$indent" '')
 
-  if [[ ${#SECRET_NAMES[@]:-0} -eq 0 ]]; then
+  if [[ ${#SECRET_NAMES[@]} -eq 0 ]]; then
     return
   fi
 
@@ -194,7 +194,7 @@ gen_configmap() {
   # ConfigMap holds non-secret env configuration.
   # Also stores DB mode and port for platform tooling (dashboard, Phase 3).
   local data_entries=""
-  if [[ ${#ENV_VARS[@]:-0} -gt 0 ]]; then
+  if [[ ${#ENV_VARS[@]} -gt 0 ]]; then
     for ev in "${ENV_VARS[@]}"; do
       local key="${ev%%=*}"
       local val="${ev#*=}"
@@ -223,7 +223,8 @@ metadata:
 data:
   PORT: "${PORT}"
   DB_MODE: "${DB_MODE}"
-$(printf '%b' "$data_entries")EOF
+$(printf '%b' "$data_entries")
+EOF
   info "Generated: 03-configmap.yaml"
 }
 
@@ -241,7 +242,7 @@ gen_deployment() {
 "
 
   # Non-secret vars
-  if [[ ${#ENV_VARS[@]:-0} -gt 0 ]]; then
+  if [[ ${#ENV_VARS[@]} -gt 0 ]]; then
     for ev in "${ENV_VARS[@]}"; do
       local key="${ev%%=*}"
       local val="${ev#*=}"
@@ -252,7 +253,7 @@ gen_deployment() {
   fi
 
   # Secret refs
-  if [[ ${#SECRET_NAMES[@]:-0} -gt 0 ]]; then
+  if [[ ${#SECRET_NAMES[@]} -gt 0 ]]; then
     for sn in "${SECRET_NAMES[@]}"; do
       env_section+="            - name: ${sn}
               valueFrom:
@@ -432,7 +433,7 @@ print_summary() {
   echo "    kubectl apply -f $OUT_DIR/04-deployment.yaml"
   echo "    kubectl apply -f $OUT_DIR/05-service.yaml"
   echo ""
-  if [[ ${#SECRET_NAMES[@]:-0} -gt 0 ]]; then
+  if [[ ${#SECRET_NAMES[@]} -gt 0 ]]; then
     echo "  ${YELLOW}Note:${NC} Secret '${SERVICE_NAME}-secrets' was created by onboard.sh."
     echo "  It is not regenerated here. To recreate: re-run onboard.sh"
     echo "  To rotate a key: ./rotate-secret.sh --service $SERVICE_NAME --key <KEY>"

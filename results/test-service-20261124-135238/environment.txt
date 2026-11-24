@@ -1,0 +1,18 @@
+date_utc: 2026-11-24T13:52:39Z
+host: Linux arch 7.1.11-arch1-1 #1 SMP PREEMPT_DYNAMIC Fri, 28 Aug 2026 03:36:07 +0000 x86_64 GNU/Linux
+cpu_cores: 12
+memory_mb: 15311
+docker: 29.7.2
+k3d: k3d version v5.9.0
+kind: n/a
+kubectl_client: Client Version: v1.37.2
+kubernetes_server: Server Version: v1.35.5+k3s1
+nodes:
+NAME                        STATUS   ROLES           AGE   VERSION        INTERNAL-IP   EXTERNAL-IP   OS-IMAGE           KERNEL-VERSION   CONTAINER-RUNTIME
+k3d-k8s-platform-agent-0    Ready    <none>          44m   v1.35.5+k3s1   172.19.0.4    <none>        K3s v1.35.5+k3s1   7.1.11-arch1-1   containerd://2.2.3-k3s1
+k3d-k8s-platform-server-0   Ready    control-plane   44m   v1.35.5+k3s1   172.19.0.3    <none>        K3s v1.35.5+k3s1   7.1.11-arch1-1   containerd://2.2.3-k3s1
+service: test-service  namespace: apps  replicas_spec: 1
+resources:
+{"limits":{"cpu":"500m","memory":"512Mi"},"requests":{"cpu":"100m","memory":"128Mi"}}
+scaledobject:
+settings: runs=5 load_runs=3 workers=20 duration=120s path=/healthz

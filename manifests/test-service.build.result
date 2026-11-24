@@ -1,0 +1,10 @@
+# Build result — written by build.sh
+# Source: /home/ad1tya/Documents/K8_Project/manifests/test-service.onboard.conf
+BUILD_DATE="2026-11-24T13:40:34Z"
+SERVICE_NAME="test-service"
+IMAGE_REF="localhost:5050/test-service:a27529f"
+IMAGE_LATEST="localhost:5050/test-service:latest"
+IMAGE_TAG="a27529f"
+BUILD_USED="dockerfile"
+REPO_URL="https://github.com/an1rxdh664/test-project-for-k8.git"
+BRANCH="master"

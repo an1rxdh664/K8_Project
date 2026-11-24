@@ -1,0 +1,21 @@
+
+Kubernetes Platform — Resilience Tests
+
+Test 2: Network Partition (egress block)
+[INFO]  Applying egress-blocking NetworkPolicy to test-service pods
+[INFO]  Waiting 10s to observe pod behaviour under network partition...
+[INFO]  Removing NetworkPolicy
+[FAIL]  [network-partition] FAIL — Pods not healthy during/after partition: running=0 ready=0 desired=1
+[INFO]  Results written → manifests/test-service.resilience-results.json
+configmap/test-service-resilience-results patched
+
+Resilience test run complete — test-service / 20261124-140320
+
+  —  pod-failure: skipped
+  ✗  network-partition: fail
+  —  resource-exhaustion: skipped
+
+  Passed: 0 / Failed: 1
+  Results: manifests/test-service.resilience-results.json
+
+  View history: ./run-resilience-tests.sh --results test-service

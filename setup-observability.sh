@@ -72,7 +72,7 @@ install_prometheus_stack() {
     --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
     --set prometheus.prometheusSpec.serviceMonitorNamespaceSelector.matchExpressions[0].key=kubernetes.io/metadata.name \
     --set prometheus.prometheusSpec.serviceMonitorNamespaceSelector.matchExpressions[0].operator=In \
-    "--set prometheus.prometheusSpec.serviceMonitorNamespaceSelector.matchExpressions[0].values={${APPS_NAMESPACE},${OBS_NAMESPACE}}" \
+    --set "prometheus.prometheusSpec.serviceMonitorNamespaceSelector.matchExpressions[0].values={${APPS_NAMESPACE},${OBS_NAMESPACE}}" \
     --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
     --set alertmanager.enabled=false \
     --set nodeExporter.enabled=true \

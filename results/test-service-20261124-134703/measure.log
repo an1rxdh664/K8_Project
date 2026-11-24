@@ -1,0 +1,5 @@
+[19:17:03] service=test-service ns=apps tests=footprint,recovery,partition,coldstart,load  results -> ./results/test-service-20261124-134703
+[19:17:04] FOOTPRINT: 3 samples of kubectl top (10 s apart)
+[19:17:25] RECOVERY: 5 runs (kill a pod, time until a replacement is Ready, count failed requests)
+[19:19:26] run 1: service not steady, skipping
+[19:21:26] run 2: service not steady, skipping

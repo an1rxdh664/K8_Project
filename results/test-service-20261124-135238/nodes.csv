@@ -1,0 +1,7 @@
+sample,node,cpu_m,cpu_pct,mem_mi,mem_pct
+1,k3d-k8s-platform-agent-0,61,0,823,5
+1,k3d-k8s-platform-server-0,130,1,1770,11
+2,k3d-k8s-platform-agent-0,64,0,823,5
+2,k3d-k8s-platform-server-0,133,1,1771,11
+3,k3d-k8s-platform-agent-0,55,0,826,5
+3,k3d-k8s-platform-server-0,158,1,1786,11

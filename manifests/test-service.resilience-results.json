@@ -1,0 +1,1 @@
+{"run_id":"20261124-140409","service":"test-service","timestamp":"2026-11-24T14:04:25Z","tests":{"pod-failure":"skipped","network-partition":"fail","resource-exhaustion":"skipped"},"passed":0,"failed":1}

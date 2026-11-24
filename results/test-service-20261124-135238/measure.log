@@ -1,0 +1,15 @@
+[19:22:38] service=test-service ns=apps tests=footprint,recovery,partition  results -> ./results/test-service-20261124-135238
+[19:22:40] FOOTPRINT: 3 samples of kubectl top (10 s apart)
+[19:23:01] RECOVERY: 5 runs (kill a pod, time until a replacement is Ready, count failed requests)
+[19:25:01] run 1: service not steady, skipping
+[19:27:02] run 2: service not steady, skipping
+[19:29:03] run 3: service not steady, skipping
+[19:31:03] run 4: service not steady, skipping
+[19:33:04] run 5: service not steady, skipping
+[19:33:04] PARTITION: 5 runs of run-resilience-tests.sh --test network-partition
+[19:33:20] run 1: FAIL
+[19:33:36] run 2: FAIL
+[19:33:53] run 3: FAIL
+[19:34:09] run 4: FAIL
+[19:34:25] run 5: FAIL
+[19:34:25] done. Raw data: ./results/test-service-20261124-135238
